@@ -169,9 +169,9 @@ int main(int argc,char *argv[]){
     // write bin into vhdfile
     if (w_count > 0 && w_count == b_count && d_arg) {
         for (int i = 0; i < w_count; i++) {
-            printf("writing BIN %s into LBA %lu of VHD %s\n", b_args[i], w_args[i], d_arg);
+            printf("writing BIN %s into LBA %u of VHD %s\n", b_args[i], w_args[i], d_arg);
             writeFixedDiskByLBA(b_args[i], d_arg, w_args[i]);
-            printf("writing BIN %s into LBA %lu of VHD %s DONE\n", b_args[i], w_args[i], d_arg);
+            printf("writing BIN %s into LBA %u of VHD %s DONE\n", b_args[i], w_args[i], d_arg);
         }
     }
 
@@ -179,7 +179,7 @@ int main(int argc,char *argv[]){
     if (r_count > 0 && d_arg) {
         for (int i = 0; i < r_count; i++) {
             printf("************************\n");
-            printf("* LBA %lu of VHD %s\n", r_args[i], d_arg);
+            printf("* LBA %u of VHD %s\n", r_args[i], d_arg);
             printf("************************\n");
             printFixedDiskByLBA(d_arg, r_args[i]);
             printf("************************\n");
@@ -329,7 +329,7 @@ void printFooter(Footer *footer) {
 
     // disk geometry
     Disk_geometry disk_geometry = footer->disk_geometry;
-    printf("Cylinders: %d\n", switchByteOrder(disk_geometry.cylinders, 16));
+    printf("Cylinders: %lu\n", switchByteOrder(disk_geometry.cylinders, 16));
     printf("Heads: %d\n", disk_geometry.heads);
     printf("SectorsPerTrack: %d\n", disk_geometry.sectorsPerTrack);
 

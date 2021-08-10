@@ -3,7 +3,7 @@ all: prepare
 	chmod a+x ./bin/vhd
 
 prepare:
-	$(shell if [[ ! -d ./bin ]]; then mkdir ./bin; fi)
+	bash -c "if [[ ! -d ./bin ]]; then mkdir ./bin; fi"
 
 clean:
 	rm -rf ./bin
