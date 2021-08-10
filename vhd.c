@@ -87,6 +87,9 @@ void hex2String(uint64_t hex, char* str);
 uint64_t switchByteOrder(uint64_t origin, uint8_t valid_len);
 uint16_t* getVersion(uint32_t version_le);
 void writeFixedDiskByLBA(char *binfile, char *vhdfile, uint32_t LBA);
+uint32_t parseSize(char *sizeStr);
+void printFixedDiskByLBA(char *vhdfile, uint32_t LBA);
+
 /*
  * Global variables
  */
@@ -99,135 +102,120 @@ uint32_t secondsGap = 946699200; // 1970.01.01 00:00:00 - 2000.01.01 12:00:00 94
  * Main
  */
 int main(int argc,char *argv[]){
-    uint8_t binfile_flag = 0; // 1 means waiting for a binfile
-    int readLBA_arr[argc], readLBA_count = 0;
-    int writeLBA_arr[argc], writeLBA_count = 0;
-    char *binfile_arr[argc];
-    char *vhdfile = NULL;
-    uint32_t newVhdSize = 0;
-    // parse options
-    for (int i = 1; i < argc; i++) {
-        if (!strcmp(argv[i], "--version")) {
-            // --version
-            uint16_t *creator_versions = getVersion(CREATOR_VERSION);
-            printf("VHD %u.%u - A tool to r/w .vhd\n", creator_versions[0], creator_versions[1]);
-        } else if (!strcmp(argv[i], "--help")) {
-            // --help
-            uint16_t *creator_versions = getVersion(CREATOR_VERSION);
-            printf("VHD %u.%u - A tool to r/w .vhd\n", creator_versions[0], creator_versions[1]);
-            // usage
-            printf("\nusage: vhd [arguments] [vhdfile]\tshow vhdfile info");
-            printf("\n   or: vhd -w[LBA] [binfile] [vhdfile]\twrite bin into specified LBA");
-            printf("\n   or: vhd -r[LBA,...] [vhdfile]\toutput specified LBA");
-            printf("\n   or: vhd -s[size] [vhdfile]\tcreate vhdfile");
+    int ch;
+    opterr = 0;
 
-            printf("\n\nArguments:\n");
-            printf("   --help\tshow help\n");
-            printf("   --version\tshow version\n");
-            printf("   -s\tspecify vhdfile size (Byte)\n");
-        } else if (argv[i][0] == '-') {
-            binfile_flag = 0;
-            if (argv[i][1] == 'r') {
-                // -r
-                int readLBA = 0;
-                for (int j = 2; argv[i][j] != '\0'; j++) {
-                    if (argv[i][j] == ',') {
-                        readLBA_arr[readLBA_count++] = readLBA;
-                        readLBA = 0;
-                    } else if (argv[i][j] >= '0' && argv[i][j] <= '9'){
-                        readLBA = (argv[i][j] - '0') + readLBA * 10;
-                    } else {
-                        printf("option %s illegal\n", argv[i]);
-                        exit(1);
-                    }
-                }
-                if (readLBA) {
-                    readLBA_arr[readLBA_count++] = readLBA;
-                }
-            } else if (argv[i][1] == 'w') {
-                // -w
-                writeLBA_arr[writeLBA_count] = 0; // init
-                for (int j = 2; argv[i][j] >= '0' && argv[i][j] <= '9'; j++) {
-                    writeLBA_arr[writeLBA_count] = (argv[i][j] - '0') + writeLBA_arr[writeLBA_count] * 10;
-                }
-                writeLBA_count++;
-                binfile_flag = 1;
-            } else if (argv[i][1] == 's'){
-                // -s
-                int sizeNum = 0;
-                char sizeUnit = 'B';
-                for (int j = 2; argv[i][j] != '\0'; j++) {
-                    if (argv[i][j] >= '0' && argv[i][j] <= '9') {
-                        sizeNum = (argv[i][j] - '0') + sizeNum * 10;
-                    } else {
-                        sizeUnit = argv[i][j];
-                        break;
-                    }
-                }
-                if (sizeUnit == 'B') {
-                    newVhdSize = sizeNum;
-                } else if (sizeUnit == 'K') {
-                    newVhdSize = sizeNum * 1024;
-                } else if (sizeUnit == 'M') {
-                    newVhdSize = sizeNum * 1024 * 1024;
-                } else if (sizeUnit == 'G') {
-                    newVhdSize = sizeNum * 1024 * 1024 * 1024;
-                } else {
-                    printf("option %s illegal\n", argv[i]);
-                }
-            }else {
-                printf("undefined option %s\n", argv[i]);
-            }
-        } else {
-            if (binfile_flag) {
-                binfile_flag = 0;
-                binfile_arr[writeLBA_count-1] = argv[i];
-            } else {
-                vhdfile = argv[i];
-            }
-        }
-    }
-    // create vhd
-    if (newVhdSize) {
-        printf("creating vhd %s\n\n", vhdfile);
-        createFixedDisk(vhdfile, newVhdSize);
-    } else {
-        // show vhdfile info
-        if (vhdfile) {
-            Footer footer = readFooter(vhdfile);
-            printFooter(&footer);
+    uint16_t *creator_versions;
+    int r_count=0, w_count=0, b_count=0;
+    uint32_t r_args[argc], w_args[argc], s_arg=0;
+    char *b_args[argc], *d_arg=NULL;
+
+    while((ch = getopt(argc, argv, "vhr:w:d:b:s:")) != -1) {
+        switch(ch) {
+            case 'v': creator_versions = getVersion(CREATOR_VERSION);
+                      printf("VHD %u.%u - A tool to r/w .vhd\n", creator_versions[0], creator_versions[1]);
+                      break;
+            case 'h': 
+                      creator_versions = getVersion(CREATOR_VERSION);
+                      printf("VHD %u.%u - A tool to r/w .vhd\n", creator_versions[0], creator_versions[1]);
+                      // usage
+                      printf("\nusage: vhd [arguments] -d [vhdfile]\tshow vhdfile info");
+                      printf("\n   or: vhd -w[LBA] -b [binfile] -d [vhdfile]\twrite bin into specified LBA");
+                      printf("\n   or: vhd -r[LBA] -d [vhdfile]\toutput specified LBA");
+                      printf("\n   or: vhd -s[size] -d [vhdfile]\tcreate vhdfile");
+
+                      printf("\n\nArguments:\n");
+                      printf("   -h\tshow help\n");
+                      printf("   -v\tshow version\n");
+                      printf("   -s\tspecify create size (B, K/KB, M/MB, G/GB)\n");
+                      printf("   -r\tspecify LBA to read\n");
+                      printf("   -w\tspecify LBA to write\n");
+                      printf("   -d\tspecify vhdfile\n");
+                      printf("   -b\tspecify binfile\n");
+                      break;
+            case 'd': d_arg = optarg;
+                      break;
+            case 's': 
+                      s_arg = parseSize(optarg);
+                      break;
+            case 'r': r_args[r_count] = atoi(optarg);
+                      r_count++;
+                      break;
+            case 'w': w_args[w_count] = atoi(optarg);
+                      w_count++;
+                      break;
+            case 'b': b_args[b_count] = optarg;
+                      b_count++;
+                      break;
+            default: printf("undefined option: -%c\n", optopt);
         }
     }
 
-    // do write
-    if (writeLBA_count) {
-        if (vhdfile) {
-            for (int i = 0; i < writeLBA_count; i++) {
-                if (binfile_arr[i]) {
-                    printf("writing %s into %s LBA %d\n", binfile_arr[i], vhdfile, writeLBA_arr[i]);
-                    writeFixedDiskByLBA(binfile_arr[i], vhdfile, writeLBA_arr[i]);
-                } else {
-                    printf("-w: not provide binfile\n");
-                }
-            }
-        } else {
-            printf("-w: not provide vhdfile\n");
+    // create vhdfile
+    if (s_arg > 0 && d_arg) {
+        printf("creating vhd %s\n", d_arg);
+        createFixedDisk(d_arg, s_arg);
+        printf("Create vhd %s DONE\n", d_arg);
+    }
+
+    // print vhdfile's footer
+    if (!d_arg) {
+        printf("Not specify vhdfile\n");
+    } else if (!s_arg && w_count <= 0 && r_count <= 0) {
+        Footer footer = readFooter(d_arg);
+        printFooter(&footer);
+    }
+
+    // write bin into vhdfile
+    if (w_count > 0 && w_count == b_count && d_arg) {
+        for (int i = 0; i < w_count; i++) {
+            printf("writing BIN %s into LBA %lu of VHD %s\n", b_args[i], w_args[i], d_arg);
+            writeFixedDiskByLBA(b_args[i], d_arg, w_args[i]);
+            printf("writing BIN %s into LBA %lu of VHD %s DONE\n", b_args[i], w_args[i], d_arg);
         }
     }
 
-    // do read
-    if (readLBA_count) {
-        if (vhdfile) {
-            for (int i = 0; i < readLBA_count; i++) {
-                printf("reading LBA %d of %s\n", readLBA_arr[i], vhdfile);
-            }
-        } else {
-            printf("-r: not provide vhdfile\n");
+    // read LBA
+    if (r_count > 0 && d_arg) {
+        for (int i = 0; i < r_count; i++) {
+            printf("************************\n");
+            printf("* LBA %lu of VHD %s\n", r_args[i], d_arg);
+            printf("************************\n");
+            printFixedDiskByLBA(d_arg, r_args[i]);
+            printf("************************\n");
         }
     }
     return 0;
 }
 
+/* parse size string into byte num, eg. "1MB" => 1048576
+ *
+ */
+uint32_t parseSize(char *sizeStr) {
+    uint32_t sizeNum = 0;
+    char sizeUnit = 'B';
+    for (int i = 0; sizeStr[i] != '\0'; i++) {
+        if (sizeStr[i] >= '0' && sizeStr[i] <= '9') {
+            sizeNum = (sizeStr[i] - '0') + sizeNum * 10;
+        } else {
+            sizeUnit = sizeStr[i];
+            break;
+        }
+    }
+    if (sizeUnit == 'B') {
+        sizeNum = sizeNum;
+    } else if (sizeUnit == 'K') {
+        sizeNum *= 1024;
+    } else if (sizeUnit == 'M') {
+        sizeNum *= 1024 * 1024;
+    } else if (sizeUnit == 'G') {
+        sizeNum = 1024 * 1024 * 1024;
+    } else {
+        printf("size %s illegal\n", sizeStr);
+        exit(1);
+    }
+    return sizeNum;
+}
 
 
 Footer readFooter(char *filepath) {
@@ -242,7 +230,7 @@ Footer readFooter(char *filepath) {
     stat(filepath, &statbuf);
     int filesize = statbuf.st_size;
     if (filesize < (VHD_MIN_BYTES+512) || filesize > VHD_MAX_BYTES) {
-        printf("File %s size %ld Bytes, not in 4MB - 4GB\n", filepath, filesize);
+        printf("File %s size %d Bytes, not in 4MB - 4GB\n", filepath, filesize);
         exit(1);
     }
 
@@ -314,29 +302,29 @@ void printFooter(Footer *footer) {
     // original size
     printf("original size: ");
     uint64_t original_B = switchByteOrder(footer->original_size, 64);
-    int original_MB, original_GB;
+    uint64_t original_MB, original_GB;
     original_MB = original_B / (1024*1024);
     original_GB = original_MB / 1024;
     if (original_GB > 0) {
-        printf("%d GB\n", original_GB);
+        printf("%lu GB\n", original_GB);
     } else if (original_MB > 0){
-        printf("%d MB\n", original_MB);
+        printf("%lu MB\n", original_MB);
     } else {
-        printf("%d B\n", original_B);
+        printf("%lu B\n", original_B);
     }
 
     // current size
     printf("current size: ");
     uint64_t current_B = switchByteOrder(footer->current_size, 64);
-    int current_MB, current_GB;
+    uint64_t current_MB, current_GB;
     current_MB = current_B / (1024*1024);
     current_GB = current_MB / 1024;
     if (current_GB > 0) {
-        printf("%d GB\n", current_GB);
+        printf("%lu GB\n", current_GB);
     } else if (current_MB > 0){
-        printf("%d MB\n", current_MB);
+        printf("%lu MB\n", current_MB);
     } else {
-        printf("%d B\n", current_B);
+        printf("%lu B\n", current_B);
     }
 
     // disk geometry
@@ -365,7 +353,7 @@ void printFooter(Footer *footer) {
     }
 
     // checksum
-    printf("checksum: 0x%08x\n", switchByteOrder(footer->checksum, 32));
+    printf("checksum: 0x%08lx\n", switchByteOrder(footer->checksum, 32));
 
     // unique id
     printf("unique id: 0x%016lx%016lx\n", switchByteOrder(footer->unique_id_1, 64), 
@@ -381,19 +369,28 @@ void printFooter(Footer *footer) {
     } else {
         printf("%s\n", "UNDEFINED");
     }
-
+    printf("************************\n");
 }
 
 /* covert ascii hex number to string
  * params:
- * - hex: length shorter than 64 bit
- * - str: char array, length should be char nums + 1 ('\0' need to be append to this array)
+ *     - hex: length shorter than 64 bit
+ *     - str: char array, length should be char nums + 1 ('\0' need to be append to this array)
+ *
+ * Notice:
+ *     - some special byte may cause result str cannot be ouput by %s. eg.0x00 corresponding to char '\0'
+ *     - visual char range: 0x20 - 0x7e
  */
 void hex2String(uint64_t hex, char *str) {
     uint8_t mask = 0xff, len_bytes = sizeof(str);
     for (int i = 0;  i < len_bytes; i++) {
         uint8_t code = (hex >> (i*8)) & mask;
-        str[i] = toascii(code);
+        if (code >= 0x20 && code <= 0x7e) {
+            str[i] = toascii(code);
+        } else {
+            // replace invisual char with '.'
+            str[i] = '.';
+        }
     }
     str[len_bytes] = '\0';
 }
@@ -438,6 +435,61 @@ void writeFixedDiskByLBA(char *binfile, char *vhdfile, uint32_t LBA) {
     fclose(output_fp);
 }
 
+/* similar to xxd, but can specify LBA
+ *
+ */
+void printFixedDiskByLBA(char *vhdfile, uint32_t LBA) {
+    // check if file exists
+    if (access(vhdfile, F_OK) == -1) {
+        printf("File %s not exixts\n", vhdfile);
+        exit(1);
+    }
+
+    // open file
+    FILE *fp = fopen(vhdfile,"rb+");
+    if(fp == NULL){
+        printf("Cannot open file %s\n", vhdfile);
+        exit(1);
+    }
+
+    // move fp to LBA
+    fseek(fp, LBA*512, SEEK_SET);
+
+    // read
+    uint8_t buffer[512];
+    if (!feof(fp)) {
+        fread(&buffer, sizeof(buffer), 1, fp);
+    }
+    fclose(fp);
+
+    uint32_t byteOffset = 0;
+    uint64_t lineSum_0 = 0, lineSum_1 = 0;
+    char asciiStr_0[9], asciiStr_1[9];
+    for (uint16_t i = 0; i < 512; i+=2) {
+        if (i % 16 == 0) {
+            byteOffset = i + LBA * 512;
+            printf("%016x: ", byteOffset);
+        }
+        printf("%02x%02x ", buffer[i], buffer[i+1]);
+        if (i % 16 < 8) {
+            // 0 - 7 byte inline
+            lineSum_0 += (((uint64_t)buffer[i]) << (i*8));
+            lineSum_0 += (((uint64_t)buffer[i+1]) << ((i+1)*8));
+        } else {
+            // 8 - 15 byte inline
+            lineSum_1 += (((uint64_t)buffer[i]) << ((i-8)*8));
+            lineSum_1 += (((uint64_t)buffer[i+1]) << ((i-8+1)*8));
+        }
+        if ((i+2) % 16 == 0) {
+            hex2String(lineSum_0, asciiStr_0);
+            hex2String(lineSum_1, asciiStr_1);
+            printf(" %s%s\n", asciiStr_0, asciiStr_1);
+            lineSum_0 = 0;
+            lineSum_1 = 0;
+        }
+    }
+}
+
 void createFixedDisk(char *filepath, uint32_t len_bytes) {
     // check if file already exists
     if (access(filepath, F_OK) != -1) {
@@ -450,7 +502,6 @@ void createFixedDisk(char *filepath, uint32_t len_bytes) {
         printf("Should specify size in 4MB - 4GB\n");
         exit(1);
     }
-
 
     // write zero bytes to specified len
     FILE *fp = fopen(filepath,"wb");
@@ -499,17 +550,12 @@ void createFixedDisk(char *filepath, uint32_t len_bytes) {
     // append footer to file
     fwrite(&footer, footerSize , 1, fp);
 
-    // ouput footer
-    printFooter(&footer);
-
     // append zero bytes to make footer meet 512 Bytes
     int rest_len = 512 - footerSize;
     char buffer[rest_len];
     memset(buffer, 0x00, rest_len);
     fwrite(buffer, rest_len, 1, fp);
     fclose(fp);
-
-    printf("\nCreate vhd %s DONE\n", filepath);
 }
 
 
