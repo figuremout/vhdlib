@@ -15,8 +15,8 @@
 #include <sys/stat.h>
 
 /*
- * Defined vals
- * Notice: followings are all in big-endian order
+ * Authority-defined vals in footer
+ * Notice: followings are all in big-endian byte order
  */
 uint64_t DEFAULT_COOKIE = 0x78697463656e6f63; // conectix
 
@@ -47,6 +47,9 @@ uint8_t SAVED_STATE_NO = 0x00;
 
 /*
  * Footer bits struct
+ * footer should be 512 Bytes in total, struct Footer has 85 Bytes, should reserve 427 Bytes zeros after this struct
+ * Notice:
+ *     - struct must set byte align to keep its size exactly, otherwise GCC will fill in extra bytes
  */
 typedef struct {
     uint16_t cylinders;
@@ -54,9 +57,6 @@ typedef struct {
     uint8_t sectorsPerTrack;
 }__attribute__ ((packed)) Disk_geometry;
 
-// footer should be 512 Bytes in total,
-// struct Footer has 85 Bytes, Notice: must set byte align, otherwise its real size will be effect
-// reserve 427 Bytes zeros after this struct
 typedef struct {
     uint64_t cookie;
     uint32_t features; 
@@ -77,13 +77,13 @@ typedef struct {
 }__attribute__ ((packed)) Footer;
 
  
-// declare functions
+// pre-declare functions
 void createFixedDisk(char* filepath, uint32_t len_bytes);
 Footer readFooter(char* filepath);
 void printFooter(Footer* footer);
 Disk_geometry calCHS(uint32_t totalSectors);
 void fillInChecksum(Footer* footer);
-void hex2String(uint64_t hex, char* str);
+void hex2String(uint64_t hex, char* str, int len_bytes);
 uint64_t switchByteOrder(uint64_t origin, uint8_t valid_len);
 uint16_t* getVersion(uint32_t version_le);
 void writeFixedDiskByLBA(char *binfile, char *vhdfile, uint32_t LBA);
@@ -97,6 +97,12 @@ uint32_t VHD_MAX_BYTES = 0xffffffff; // 4 GB
 uint32_t VHD_MIN_BYTES = 0x00400000; // 4 MB
 uint16_t footerSize = sizeof(Footer);
 uint32_t secondsGap = 946699200; // 1970.01.01 00:00:00 - 2000.01.01 12:00:00 946699200s
+
+// In theory, unique_id should be dynamic, which is assured by user's VM to be unique
+// this default value is self-defined, user can change it as long as it's unique
+uint64_t DEFAULT_DISK_UNIQUE_ID_0 = 0xffffffffffffffff;
+uint64_t DEFAULT_DISK_UNIQUE_ID_1 = 0xffffffffffffffff;
+
 
 /*
  * Main
@@ -119,10 +125,10 @@ int main(int argc,char *argv[]){
                       creator_versions = getVersion(CREATOR_VERSION);
                       printf("VHD %u.%u - A tool to r/w .vhd\n", creator_versions[0], creator_versions[1]);
                       // usage
-                      printf("\nusage: vhd [arguments] -d [vhdfile]\tshow vhdfile info");
-                      printf("\n   or: vhd -w[LBA] -b [binfile] -d [vhdfile]\twrite bin into specified LBA");
-                      printf("\n   or: vhd -r[LBA] -d [vhdfile]\toutput specified LBA");
-                      printf("\n   or: vhd -s[size] -d [vhdfile]\tcreate vhdfile");
+                      printf("\nusage: vhd -d [vhdfile]                       show vhdfile info");
+                      printf("\n   or: vhd -d [vhdfile] -w[LBA] -b [binfile]  write bin into specified LBA");
+                      printf("\n   or: vhd -d [vhdfile] -r[LBA]               output specified LBA");
+                      printf("\n   or: vhd -d [vhdfile] -s[size]              create vhdfile");
 
                       printf("\n\nArguments:\n");
                       printf("   -h\tshow help\n");
@@ -133,7 +139,13 @@ int main(int argc,char *argv[]){
                       printf("   -d\tspecify vhdfile\n");
                       printf("   -b\tspecify binfile\n");
                       break;
-            case 'd': d_arg = optarg;
+            case 'd': 
+                      if (d_arg) {
+                          printf("too many option -%c\n", optopt);
+                          exit(1);
+                      } else {
+                        d_arg = optarg;
+                      }
                       break;
             case 's': 
                       s_arg = parseSize(optarg);
@@ -162,8 +174,11 @@ int main(int argc,char *argv[]){
     if (!d_arg) {
         printf("Not specify vhdfile\n");
     } else if (!s_arg && w_count <= 0 && r_count <= 0) {
+        printf("*************************\n");
         Footer footer = readFooter(d_arg);
+        printf("*************************\n");
         printFooter(&footer);
+        printf("************************\n");
     }
 
     // write bin into vhdfile
@@ -188,8 +203,9 @@ int main(int argc,char *argv[]){
     return 0;
 }
 
-/* parse size string into byte num, eg. "1MB" => 1048576
- *
+/* 
+ * Description:
+ *     parse size string into byte num, eg. "1MB" => 1048576
  */
 uint32_t parseSize(char *sizeStr) {
     uint32_t sizeNum = 0;
@@ -218,6 +234,10 @@ uint32_t parseSize(char *sizeStr) {
 }
 
 
+/*
+ * Description:
+ *     read file footer into struct Footer
+ */
 Footer readFooter(char *filepath) {
     // check if file exists
     if (access(filepath, F_OK) == -1) {
@@ -234,10 +254,8 @@ Footer readFooter(char *filepath) {
         exit(1);
     }
 
-    printf("************************\n");
     printf("* File: %s\n", filepath);
     printf("* Size: %d Bytes\n", filesize);
-    printf("*************************\n");
     FILE *fp = fopen(filepath,"rb+");
     // move fp to footer
     fseek(fp, -512, SEEK_END);
@@ -247,10 +265,14 @@ Footer readFooter(char *filepath) {
     return footer;
 }
 
+/*
+ * Description:
+ *     print struct Footer info
+ */
 void printFooter(Footer *footer) {
     // cookie
     char cookie_str[sizeof(footer->cookie)+1];
-    hex2String(footer->cookie, cookie_str);
+    hex2String(footer->cookie, cookie_str, sizeof(cookie_str));
     printf("cookie: %s\n", cookie_str);
 
     // features
@@ -282,7 +304,7 @@ void printFooter(Footer *footer) {
 
     // creator application
     char app_str[sizeof(footer->creator_application)+1];
-    hex2String(footer->creator_application, app_str);
+    hex2String(footer->creator_application, app_str, sizeof(app_str));
     printf("creator application: %s\n", app_str);
 
     // creator version
@@ -369,21 +391,26 @@ void printFooter(Footer *footer) {
     } else {
         printf("%s\n", "UNDEFINED");
     }
-    printf("************************\n");
 }
 
-/* covert ascii hex number to string
- * params:
+/* 
+ * Description:
+ *     covert ascii hex number to string
+ *
+ * Params:
  *     - hex: length shorter than 64 bit
  *     - str: char array, length should be char nums + 1 ('\0' need to be append to this array)
+ *     - len_bytes: sizeof(str), number of bytes in str including '\0'
  *
  * Notice:
- *     - some special byte may cause result str cannot be ouput by %s. eg.0x00 corresponding to char '\0'
+ *     - cannot sizeof(str) in this function to get len_bytes, because sizeof() return len of ptr, not len of arr
+ *     - some special byte may cause result str cannot be print by %s. eg.0x00 corresponding to char '\0'
  *     - visual char range: 0x20 - 0x7e
+ *     - the index of last byte in str is actually len_bytes-1
  */
-void hex2String(uint64_t hex, char *str) {
-    uint8_t mask = 0xff, len_bytes = sizeof(str);
-    for (int i = 0;  i < len_bytes; i++) {
+void hex2String(uint64_t hex, char *str, int len_bytes) {
+    uint8_t mask = 0xff;
+    for (int i = 0;  i < (len_bytes-1); i++) {
         uint8_t code = (hex >> (i*8)) & mask;
         if (code >= 0x20 && code <= 0x7e) {
             str[i] = toascii(code);
@@ -392,9 +419,13 @@ void hex2String(uint64_t hex, char *str) {
             str[i] = '.';
         }
     }
-    str[len_bytes] = '\0';
+    str[len_bytes-1] = '\0';
 }
 
+/*
+ * Description:
+ *     read bytes from input binfile, output into specified LBA of vhdfile
+ */
 void writeFixedDiskByLBA(char *binfile, char *vhdfile, uint32_t LBA) {
     // check if file exists
     if (access(binfile, F_OK) == -1) {
@@ -435,8 +466,9 @@ void writeFixedDiskByLBA(char *binfile, char *vhdfile, uint32_t LBA) {
     fclose(output_fp);
 }
 
-/* similar to xxd, but can specify LBA
- *
+/* 
+ * Description:
+ *     print specified LBA in hex and ascii, similar to xxd
  */
 void printFixedDiskByLBA(char *vhdfile, uint32_t LBA) {
     // check if file exists
@@ -468,7 +500,7 @@ void printFixedDiskByLBA(char *vhdfile, uint32_t LBA) {
     for (uint16_t i = 0; i < 512; i+=2) {
         if (i % 16 == 0) {
             byteOffset = i + LBA * 512;
-            printf("%016x: ", byteOffset);
+            printf("%08x: ", byteOffset);
         }
         printf("%02x%02x ", buffer[i], buffer[i+1]);
         if (i % 16 < 8) {
@@ -481,8 +513,8 @@ void printFixedDiskByLBA(char *vhdfile, uint32_t LBA) {
             lineSum_1 += (((uint64_t)buffer[i+1]) << ((i-8+1)*8));
         }
         if ((i+2) % 16 == 0) {
-            hex2String(lineSum_0, asciiStr_0);
-            hex2String(lineSum_1, asciiStr_1);
+            hex2String(lineSum_0, asciiStr_0, sizeof(asciiStr_0));
+            hex2String(lineSum_1, asciiStr_1, sizeof(asciiStr_1));
             printf(" %s%s\n", asciiStr_0, asciiStr_1);
             lineSum_0 = 0;
             lineSum_1 = 0;
@@ -490,6 +522,10 @@ void printFixedDiskByLBA(char *vhdfile, uint32_t LBA) {
     }
 }
 
+/*
+ * Description:
+ *     create specified size of new vhdfile
+ */
 void createFixedDisk(char *filepath, uint32_t len_bytes) {
     // check if file already exists
     if (access(filepath, F_OK) != -1) {
@@ -539,8 +575,8 @@ void createFixedDisk(char *filepath, uint32_t len_bytes) {
         .disk_geometry = disk_geometry,
         .disk_type = DISK_TYPE_FIXED_HARD_DISK,
         .checksum = 0, // temp value
-        .unique_id_0 = 0xffffffffffffffff, // ? TODO
-        .unique_id_1 = 0xffffffffffffffff,
+        .unique_id_0 = DEFAULT_DISK_UNIQUE_ID_0,
+        .unique_id_1 = (uint64_t) time_stamp,
         .saved_state = SAVED_STATE_NO
     };
 
@@ -559,6 +595,10 @@ void createFixedDisk(char *filepath, uint32_t len_bytes) {
 }
 
 
+/*
+ * Description:
+ *     Authority-defined algorithm to get CHS from size
+ */
 Disk_geometry calCHS(uint32_t totalSectors) {
     uint32_t cylinderTimesHeads;
     uint16_t cylinders;
@@ -604,6 +644,10 @@ Disk_geometry calCHS(uint32_t totalSectors) {
     return disk_geometry;
 }
 
+/*
+ * Description:
+ *     Athority-defined algorithm to get checksum field
+ */
 void fillInChecksum(Footer *footer) {
     uint32_t checksum = 0;
 
@@ -617,7 +661,9 @@ void fillInChecksum(Footer *footer) {
 }
 
 
-/* little endian <=> big endian
+/* 
+ * Description:
+ *     little endian <=> big endian
  *
  * Params:
  *     - origin: unsigned int, length <= 64
@@ -637,6 +683,10 @@ uint64_t switchByteOrder(uint64_t origin, uint8_t valid_len) {
     return result;
 }
 
+/*
+ * Description:
+ *     seperate major version and minor version
+ */
 uint16_t *getVersion(uint32_t version_le) {
     static uint16_t versions[2];
     uint32_t version_be = switchByteOrder(version_le, 32);
