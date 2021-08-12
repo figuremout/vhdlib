@@ -12,7 +12,6 @@
 #include <unistd.h>
 #include <string.h>
 #include <ctype.h>
-#include <sys/stat.h>
 #include <uuid/uuid.h>
 
 /*
@@ -96,7 +95,9 @@ uint16_t* getVersion(uint32_t version_le);
 void writeFixedDiskByLBA(char *binfile, char *vhdfile, uint32_t LBA);
 uint32_t parseSize(char *sizeStr);
 void printFixedDiskByLBA(char *vhdfile, uint32_t LBA);
-
+int getFileSize(char *filepath);
+void writeBlock(void *buffer, int bufferSize, FILE *fp);
+void readBlock(void *buffer, int bufferSize, FILE *fp);
 /*
  * Global variables
  */
@@ -120,11 +121,11 @@ int main(int argc,char *argv[]){
     while((ch = getopt(argc, argv, "vhr:w:d:b:s:")) != -1) {
         switch(ch) {
             case 'v': creator_versions = getVersion(CREATOR_VERSION);
-                      printf("VHD %u.%u - A tool to r/w .vhd\n", creator_versions[0], creator_versions[1]);
+                      printf("VHD %u.%u - A tool to r/w vhd\n", creator_versions[0], creator_versions[1]);
                       break;
             case 'h': 
                       creator_versions = getVersion(CREATOR_VERSION);
-                      printf("VHD %u.%u - A tool to r/w .vhd\n", creator_versions[0], creator_versions[1]);
+                      printf("VHD %u.%u - A tool to r/w vhd\n", creator_versions[0], creator_versions[1]);
                       // usage
                       printf("\nusage: vhd -d [vhdfile]                       show vhdfile footer info");
                       printf("\n   or: vhd -d [vhdfile] -w[LBA] -b [binfile]  write bin into specified LBA");
@@ -189,6 +190,7 @@ int main(int argc,char *argv[]){
             // only -d exists
             printf("------------------------\n");
             printf("* FILE %s\n", d_arg);
+            printf("* LBA range: 0 - %u\n", maxLBA);
             printf("------------------------\n");
             printFooter(&footer);
             printf("------------------------\n");
@@ -199,8 +201,15 @@ int main(int argc,char *argv[]){
     if (w_count > 0 && w_count == b_count && d_arg) {
         printf("------------------------\n");
         for (int i = 0; i < w_count; i++) {
+            // make sure start LBA in range
             if (w_args[i] > maxLBA) {
                 printf("LBA %u out of range: 0 - %u\n", w_args[i], maxLBA);
+                continue;
+            }
+            // make sure end LBA in range
+            int input_size = getFileSize(b_args[i]);
+            if (((input_size-1)/512 + w_args[i]) > maxLBA) {
+                printf("File %s size out of disk size\n", b_args[i]);
                 continue;
             }
             writeFixedDiskByLBA(b_args[i], d_arg, w_args[i]);
@@ -224,6 +233,55 @@ int main(int argc,char *argv[]){
     return 0;
 }
 
+/*
+ * Description:
+ *     get size (byte) of a file
+ */
+int getFileSize(char *filepath) {
+    // check if file exists
+    if (access(filepath, F_OK) == -1) {
+        printf("File %s not exixts\n", filepath);
+        exit(1);
+    }
+
+    FILE *fp;
+    int len;
+    fp = fopen(filepath, "rb");
+    if(fp == NULL) {
+        printf("Cannot open file %s\n", filepath);
+        exit(1);
+    }
+    fseek(fp, 0, SEEK_END);
+    len = ftell(fp);
+    fclose(fp);
+    return len;
+}
+
+/*
+ * Description:
+ *     write block
+ */
+void writeBlock(void *buffer, int bufferSize, FILE *fp) {
+    size_t bufferCount = fwrite(buffer, bufferSize, 1, fp);
+    if (bufferCount != 1 && ferror(fp) != 0) {
+        printf("Error occurs when writing buffer into file\n");
+        fclose(fp);
+        exit(1);
+    }
+}
+
+/*
+ * Description:
+ *     read block
+ */
+void readBlock(void *buffer, int bufferSize, FILE *fp) {
+    size_t bufferCount = fread(buffer, bufferSize, 1, fp);
+    if (bufferCount != 1 && ferror(fp) != 0) {
+        printf("Error occurs when reading buffer from file\n");
+        fclose(fp);
+        exit(1);
+    }
+}
 /* 
  * Description:
  *     parse size string into byte num, eg. "1MB" => 1048576
@@ -266,20 +324,17 @@ Footer readFooter(char *filepath) {
         exit(1);
     }
 
-    // check file size
-    struct stat statbuf;
-    stat(filepath, &statbuf);
-    int filesize = statbuf.st_size;
+    int filesize = getFileSize(filepath);
     if (filesize < (VHD_MIN_BYTES+512) || filesize > VHD_MAX_BYTES) {
         printf("File %s size %d Bytes, not in 4MB - 4GB\n", filepath, filesize);
         exit(1);
     }
 
-    FILE *fp = fopen(filepath,"rb+");
+    FILE *fp = fopen(filepath,"rb");
     // move fp to footer
     fseek(fp, -512, SEEK_END);
     Footer footer;
-    fread(&footer, sizeof(footer), 1, fp);
+    readBlock(&footer, sizeof(footer), fp);
     fclose(fp);
     return footer;
 }
@@ -460,7 +515,7 @@ void writeFixedDiskByLBA(char *binfile, char *vhdfile, uint32_t LBA) {
     }
 
     // open input file
-    FILE *input_fp = fopen(binfile,"rb+");
+    FILE *input_fp = fopen(binfile,"rb");
     if(input_fp == NULL){
         printf("Cannot open file %s\n", binfile);
         exit(1);
@@ -469,7 +524,7 @@ void writeFixedDiskByLBA(char *binfile, char *vhdfile, uint32_t LBA) {
     fseek(input_fp, 0, SEEK_SET);
 
     // open output file
-    FILE *output_fp = fopen(vhdfile,"r+b");
+    FILE *output_fp = fopen(vhdfile,"rb+");
     if(output_fp == NULL){
         printf("Cannot open file %s\n", vhdfile);
         exit(1);
@@ -478,11 +533,10 @@ void writeFixedDiskByLBA(char *binfile, char *vhdfile, uint32_t LBA) {
     fseek(output_fp, LBA*512, SEEK_SET);
 
     // transfer
-    char buffer[512];
-    while (!feof(input_fp)) {
-        fread(&buffer, sizeof(buffer), 1, input_fp);
-        fwrite(&buffer, sizeof(buffer), 1, output_fp);
-    }
+    int input_size = getFileSize(binfile);
+    uint8_t buffer[input_size];
+    readBlock(&buffer, sizeof(buffer), input_fp);
+    writeBlock(&buffer, sizeof(buffer), output_fp);
 
     fclose(input_fp);
     fclose(output_fp);
@@ -500,7 +554,7 @@ void printFixedDiskByLBA(char *vhdfile, uint32_t LBA) {
     }
 
     // open file
-    FILE *fp = fopen(vhdfile,"rb+");
+    FILE *fp = fopen(vhdfile,"rb");
     if(fp == NULL){
         printf("Cannot open file %s\n", vhdfile);
         exit(1);
@@ -511,9 +565,7 @@ void printFixedDiskByLBA(char *vhdfile, uint32_t LBA) {
 
     // read
     uint8_t buffer[512];
-    if (!feof(fp)) {
-        fread(&buffer, sizeof(buffer), 1, fp);
-    }
+    readBlock(&buffer, sizeof(buffer), fp);
     fclose(fp);
 
     uint32_t byteOffset = 0;
@@ -568,7 +620,11 @@ void createFixedDisk(char *filepath, uint32_t len_bytes) {
         exit(1);
     }
     int fd = fileno(fp);
-    ftruncate(fd, len_bytes);
+    int ret = ftruncate(fd, len_bytes);
+    if (ret != 0) {
+        printf("Error occurs when creating file %s\n", filepath);
+        exit(1);
+    }
 
     // move fp to end
     fseek(fp, 0, SEEK_END);
@@ -608,15 +664,13 @@ void createFixedDisk(char *filepath, uint32_t len_bytes) {
     fillInChecksum(&footer);
  
     // append footer to file
-    fwrite(&footer, footerSize , 1, fp);
-
+    writeBlock(&footer, footerSize, fp);
     // append zero bytes to make footer meet 512 Bytes
     int rest_len = 512 - footerSize;
     char buffer[rest_len];
     memset(buffer, 0x00, rest_len);
-    fwrite(buffer, rest_len, 1, fp);
+    writeBlock(&buffer, rest_len, fp);
     fclose(fp);
-
     // print uuid
     char uuid_str[37];
     uuid_unparse((uint8_t *)&footer.uuid, uuid_str);
