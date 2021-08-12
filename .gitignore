@@ -1,4 +1,6 @@
 bin/
+*\.vhd
+
 # jupyter
 .ipynb_checkpoints/
 

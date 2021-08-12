@@ -13,6 +13,7 @@
 #include <string.h>
 #include <ctype.h>
 #include <sys/stat.h>
+#include <uuid/uuid.h>
 
 /*
  * Authority-defined vals in footer
@@ -26,6 +27,7 @@ uint32_t FEATURES_RESERVED = 0x02000000;
 
 uint32_t CREATOR_HOST_OS_Wi2k = 0x6b326957; // Windows
 uint32_t CREATOR_HOST_OS_Mac = 0x2063614d; // Macintosh
+uint32_t CREATOR_HOST_OS_Lnux = 0x78756e4c; // Linux self-defined
 
 uint32_t DISK_TYPE_NONE = 0x00000000;
 uint32_t DISK_TYPE_RESERVED_DEPRECATED_0 = 0x01000000;
@@ -58,6 +60,13 @@ typedef struct {
 }__attribute__ ((packed)) Disk_geometry;
 
 typedef struct {
+	uint32_t f1;
+	uint16_t f2;
+	uint16_t f3;
+	uint8_t  f4[8];
+}__attribute__ ((packed)) UUID;
+
+typedef struct {
     uint64_t cookie;
     uint32_t features; 
     uint32_t file_format_version;
@@ -71,11 +80,9 @@ typedef struct {
     Disk_geometry disk_geometry;
     uint32_t disk_type;
     uint32_t checksum;
-    uint64_t unique_id_0;
-    uint64_t unique_id_1;
+    UUID uuid;
     uint8_t saved_state;
 }__attribute__ ((packed)) Footer;
-
  
 // pre-declare functions
 void createFixedDisk(char* filepath, uint32_t len_bytes);
@@ -98,12 +105,6 @@ uint32_t VHD_MIN_BYTES = 0x00400000; // 4 MB
 uint16_t footerSize = sizeof(Footer);
 uint32_t secondsGap = 946699200; // 1970.01.01 00:00:00 - 2000.01.01 12:00:00 946699200s
 
-// In theory, unique_id should be dynamic, which is assured by user's VM to be unique
-// this default value is self-defined, user can change it as long as it's unique
-uint64_t DEFAULT_DISK_UNIQUE_ID_0 = 0xffffffffffffffff;
-uint64_t DEFAULT_DISK_UNIQUE_ID_1 = 0xffffffffffffffff;
-
-
 /*
  * Main
  */
@@ -125,7 +126,7 @@ int main(int argc,char *argv[]){
                       creator_versions = getVersion(CREATOR_VERSION);
                       printf("VHD %u.%u - A tool to r/w .vhd\n", creator_versions[0], creator_versions[1]);
                       // usage
-                      printf("\nusage: vhd -d [vhdfile]                       show vhdfile info");
+                      printf("\nusage: vhd -d [vhdfile]                       show vhdfile footer info");
                       printf("\n   or: vhd -d [vhdfile] -w[LBA] -b [binfile]  write bin into specified LBA");
                       printf("\n   or: vhd -d [vhdfile] -r[LBA]               output specified LBA");
                       printf("\n   or: vhd -d [vhdfile] -s[size]              create vhdfile");
@@ -133,7 +134,7 @@ int main(int argc,char *argv[]){
                       printf("\n\nArguments:\n");
                       printf("   -h\tshow help\n");
                       printf("   -v\tshow version\n");
-                      printf("   -s\tspecify create size (B, K/KB, M/MB, G/GB)\n");
+                      printf("   -s\tspecify VHD size to create (B, K/KB, M/MB, G/GB), range 4MB - 4GB\n");
                       printf("   -r\tspecify LBA to read\n");
                       printf("   -w\tspecify LBA to write\n");
                       printf("   -d\tspecify vhdfile\n");
@@ -141,14 +142,19 @@ int main(int argc,char *argv[]){
                       break;
             case 'd': 
                       if (d_arg) {
-                          printf("too many option -%c\n", optopt);
+                          printf("Too many option -%c\n", ch);
                           exit(1);
                       } else {
                         d_arg = optarg;
                       }
                       break;
             case 's': 
-                      s_arg = parseSize(optarg);
+                      if (s_arg) {
+                          printf("Too many option -%c\n", ch);
+                          exit(1);
+                      } else {
+                        s_arg = parseSize(optarg);
+                      }
                       break;
             case 'r': r_args[r_count] = atoi(optarg);
                       r_count++;
@@ -159,45 +165,60 @@ int main(int argc,char *argv[]){
             case 'b': b_args[b_count] = optarg;
                       b_count++;
                       break;
-            default: printf("undefined option: -%c\n", optopt);
+            default: printf("Undefined option: -%c\n", optopt);
         }
     }
 
     // create vhdfile
     if (s_arg > 0 && d_arg) {
-        printf("creating vhd %s\n", d_arg);
+        printf("------------------------\n");
         createFixedDisk(d_arg, s_arg);
-        printf("Create vhd %s DONE\n", d_arg);
+        printf("Create VHD %s DONE\n", d_arg);
+        printf("------------------------\n");
     }
 
     // print vhdfile's footer
+    uint32_t maxLBA = 0;
     if (!d_arg) {
         printf("Not specify vhdfile\n");
-    } else if (!s_arg && w_count <= 0 && r_count <= 0) {
-        printf("*************************\n");
+    } else  {
         Footer footer = readFooter(d_arg);
-        printf("*************************\n");
-        printFooter(&footer);
-        printf("************************\n");
+        maxLBA = switchByteOrder(footer.disk_geometry.cylinders, 16) * \
+                 footer.disk_geometry.heads * footer.disk_geometry.sectorsPerTrack - 1;
+        if (!s_arg && w_count <= 0 && r_count <= 0) {
+            // only -d exists
+            printf("------------------------\n");
+            printf("* FILE %s\n", d_arg);
+            printf("------------------------\n");
+            printFooter(&footer);
+            printf("------------------------\n");
+        }
     }
 
     // write bin into vhdfile
     if (w_count > 0 && w_count == b_count && d_arg) {
+        printf("------------------------\n");
         for (int i = 0; i < w_count; i++) {
-            printf("writing BIN %s into LBA %u of VHD %s\n", b_args[i], w_args[i], d_arg);
+            if (w_args[i] > maxLBA) {
+                printf("LBA %u out of range: 0 - %u\n", w_args[i], maxLBA);
+                continue;
+            }
             writeFixedDiskByLBA(b_args[i], d_arg, w_args[i]);
-            printf("writing BIN %s into LBA %u of VHD %s DONE\n", b_args[i], w_args[i], d_arg);
+            printf("Write BIN %s into LBA %u of VHD %s DONE\n", b_args[i], w_args[i], d_arg);
         }
+        printf("------------------------\n");
+    } else if (w_count > 0 && w_count != b_count && d_arg) {
+        printf("-w -b not in pair\n");
     }
 
     // read LBA
     if (r_count > 0 && d_arg) {
         for (int i = 0; i < r_count; i++) {
-            printf("************************\n");
+            printf("------------------------\n");
             printf("* LBA %u of VHD %s\n", r_args[i], d_arg);
-            printf("************************\n");
+            printf("------------------------\n");
             printFixedDiskByLBA(d_arg, r_args[i]);
-            printf("************************\n");
+            printf("------------------------\n");
         }
     }
     return 0;
@@ -227,7 +248,7 @@ uint32_t parseSize(char *sizeStr) {
     } else if (sizeUnit == 'G') {
         sizeNum = 1024 * 1024 * 1024;
     } else {
-        printf("size %s illegal\n", sizeStr);
+        printf("Size %s illegal\n", sizeStr);
         exit(1);
     }
     return sizeNum;
@@ -254,8 +275,6 @@ Footer readFooter(char *filepath) {
         exit(1);
     }
 
-    printf("* File: %s\n", filepath);
-    printf("* Size: %d Bytes\n", filesize);
     FILE *fp = fopen(filepath,"rb+");
     // move fp to footer
     fseek(fp, -512, SEEK_END);
@@ -315,8 +334,10 @@ void printFooter(Footer *footer) {
     printf("creator host os: ");
     if (footer->creator_host_os == CREATOR_HOST_OS_Wi2k) {
         printf("Windows\n");
-    } else if (footer->features == CREATOR_HOST_OS_Mac) {
+    } else if (footer->creator_host_os == CREATOR_HOST_OS_Mac) {
         printf("Macintosh\n");
+    } else if (footer->creator_host_os == CREATOR_HOST_OS_Lnux) {
+        printf("Linux\n");
     } else {
         printf("UNDEFINED\n");
     }
@@ -378,8 +399,9 @@ void printFooter(Footer *footer) {
     printf("checksum: 0x%08lx\n", switchByteOrder(footer->checksum, 32));
 
     // unique id
-    printf("unique id: 0x%016lx%016lx\n", switchByteOrder(footer->unique_id_1, 64), 
-            switchByteOrder(footer->unique_id_0, 64));
+    char uuid_str[37];
+    uuid_unparse((uint8_t *)&footer->uuid, uuid_str);
+    printf("unique id: %s\n", uuid_str);
 
     // saved state
     printf("saved state: ");
@@ -569,16 +591,18 @@ void createFixedDisk(char *filepath, uint32_t len_bytes) {
         .time_stamp = switchByteOrder(time_stamp, 32),
         .creator_application = CREATOR_APPLICATION,
         .creator_version = CREATOR_VERSION,
-        .creator_host_os = CREATOR_HOST_OS_Wi2k,
+        .creator_host_os = CREATOR_HOST_OS_Lnux,
         .original_size = switchByteOrder(original_size, 64),
         .current_size = switchByteOrder(current_size, 64),
         .disk_geometry = disk_geometry,
         .disk_type = DISK_TYPE_FIXED_HARD_DISK,
         .checksum = 0, // temp value
-        .unique_id_0 = DEFAULT_DISK_UNIQUE_ID_0,
-        .unique_id_1 = (uint64_t) time_stamp,
+        .uuid = 0, // temp value
         .saved_state = SAVED_STATE_NO
     };
+
+    // generate uuid
+    uuid_generate((uint8_t *)&footer.uuid);
 
     // cal checksum and fill it into footer
     fillInChecksum(&footer);
@@ -592,6 +616,11 @@ void createFixedDisk(char *filepath, uint32_t len_bytes) {
     memset(buffer, 0x00, rest_len);
     fwrite(buffer, rest_len, 1, fp);
     fclose(fp);
+
+    // print uuid
+    char uuid_str[37];
+    uuid_unparse((uint8_t *)&footer.uuid, uuid_str);
+    printf("New VHD uuid: %s\n", uuid_str);
 }
 
 
