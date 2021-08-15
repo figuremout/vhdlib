@@ -83,21 +83,26 @@ typedef struct {
     uint8_t saved_state;
 }__attribute__ ((packed)) Footer;
  
-// pre-declare functions
+/*
+ * Pre-declare functions
+ */
 void createFixedDisk(char* filepath, uint32_t len_bytes);
+void printFixedDiskByLBA(char *vhdfile, uint32_t LBA);
+void writeFixedDiskByLBA(char *binfile, char *vhdfile, uint32_t LBA);
 Footer readFooter(char* filepath);
 void printFooter(Footer* footer);
+
+int getFileSize(char *filepath);
+void writeBlock(void *buffer, int bufferSize, FILE *fp);
+void readBlock(void *buffer, int bufferSize, FILE *fp);
+
 Disk_geometry calCHS(uint32_t totalSectors);
 void fillInChecksum(Footer* footer);
 void hex2String(uint64_t hex, char* str, int len_bytes);
 uint64_t switchByteOrder(uint64_t origin, uint8_t valid_len);
 uint16_t* getVersion(uint32_t version_le);
-void writeFixedDiskByLBA(char *binfile, char *vhdfile, uint32_t LBA);
 uint32_t parseSize(char *sizeStr);
-void printFixedDiskByLBA(char *vhdfile, uint32_t LBA);
-int getFileSize(char *filepath);
-void writeBlock(void *buffer, int bufferSize, FILE *fp);
-void readBlock(void *buffer, int bufferSize, FILE *fp);
+
 /*
  * Global variables
  */
@@ -213,7 +218,7 @@ int main(int argc,char *argv[]){
                 continue;
             }
             writeFixedDiskByLBA(b_args[i], d_arg, w_args[i]);
-            printf("Write BIN %s into LBA %u of VHD %s DONE\n", b_args[i], w_args[i], d_arg);
+            printf("Write: VHD %s LBA %u <= BIN %s DONE\n", d_arg, w_args[i], b_args[i]);
         }
         printf("------------------------\n");
     } else if (w_count > 0 && w_count != b_count && d_arg) {
@@ -235,83 +240,181 @@ int main(int argc,char *argv[]){
 
 /*
  * Description:
- *     get size (byte) of a file
+ *     create specified size of new vhdfile
  */
-int getFileSize(char *filepath) {
-    // check if file exists
-    if (access(filepath, F_OK) == -1) {
-        printf("File %s not exixts\n", filepath);
+void createFixedDisk(char *filepath, uint32_t len_bytes) {
+    // check if file already exists
+    if (access(filepath, F_OK) != -1) {
+        printf("File %s already exixts\n", filepath);
         exit(1);
     }
 
-    FILE *fp;
-    int len;
-    fp = fopen(filepath, "rb");
-    if(fp == NULL) {
+    // check file size
+    if (len_bytes < VHD_MIN_BYTES|| len_bytes > VHD_MAX_BYTES) {
+        printf("Should specify size in 4MB - 4GB\n");
+        exit(1);
+    }
+
+    // write zero bytes to specified len
+    FILE *fp = fopen(filepath,"wb");
+    if(fp == NULL){
         printf("Cannot open file %s\n", filepath);
         exit(1);
     }
+    int fd = fileno(fp);
+    int ret = ftruncate(fd, len_bytes);
+    if (ret != 0) {
+        printf("Error occurs when creating file %s\n", filepath);
+        exit(1);
+    }
+
+    // move fp to end
     fseek(fp, 0, SEEK_END);
-    len = ftell(fp);
+
+    // add footer to end
+    // 1970.01.01 00:00:00 - now seconds
+    time_t seconds = time(NULL);
+    uint32_t time_stamp = seconds - secondsGap;
+    uint64_t original_size = len_bytes;
+    uint64_t current_size = original_size;
+    uint32_t totalSectors = original_size / 512;
+
+    Disk_geometry disk_geometry = calCHS(totalSectors);
+
+    Footer footer = { 
+        .cookie = DEFAULT_COOKIE,
+        .features = FEATURES_RESERVED,
+        .file_format_version = DEFAULT_FILE_FORMAT_VERSION,
+        .data_offset = FIXED_HARD_DISK_DATA_OFFSET,
+        .time_stamp = switchByteOrder(time_stamp, 32),
+        .creator_application = CREATOR_APPLICATION,
+        .creator_version = CREATOR_VERSION,
+        .creator_host_os = CREATOR_HOST_OS_Lnux,
+        .original_size = switchByteOrder(original_size, 64),
+        .current_size = switchByteOrder(current_size, 64),
+        .disk_geometry = disk_geometry,
+        .disk_type = DISK_TYPE_FIXED_HARD_DISK,
+        .checksum = 0, // temp value
+        .uuid = 0, // temp value
+        .saved_state = SAVED_STATE_NO
+    };
+
+    // generate uuid
+    uuid_generate((uint8_t *)&footer.uuid);
+
+    // cal checksum and fill it into footer
+    fillInChecksum(&footer);
+ 
+    // append footer to file
+    writeBlock(&footer, footerSize, fp);
+    // append zero bytes to make footer meet 512 Bytes
+    int rest_len = 512 - footerSize;
+    char buffer[rest_len];
+    memset(buffer, 0x00, rest_len);
+    writeBlock(&buffer, rest_len, fp);
     fclose(fp);
-    return len;
+    // print uuid
+    char uuid_str[37];
+    uuid_unparse((uint8_t *)&footer.uuid, uuid_str);
+    printf("New VHD uuid: %s\n", uuid_str);
 }
 
-/*
- * Description:
- *     write block
- */
-void writeBlock(void *buffer, int bufferSize, FILE *fp) {
-    size_t bufferCount = fwrite(buffer, bufferSize, 1, fp);
-    if (bufferCount != 1 && ferror(fp) != 0) {
-        printf("Error occurs when writing buffer into file\n");
-        fclose(fp);
-        exit(1);
-    }
-}
-
-/*
- * Description:
- *     read block
- */
-void readBlock(void *buffer, int bufferSize, FILE *fp) {
-    size_t bufferCount = fread(buffer, bufferSize, 1, fp);
-    if (bufferCount != 1 && ferror(fp) != 0) {
-        printf("Error occurs when reading buffer from file\n");
-        fclose(fp);
-        exit(1);
-    }
-}
 /* 
  * Description:
- *     parse size string into byte num, eg. "1MB" => 1048576
+ *     print specified LBA in hex and ascii, similar to xxd
  */
-uint32_t parseSize(char *sizeStr) {
-    uint32_t sizeNum = 0;
-    char sizeUnit = 'B';
-    for (int i = 0; sizeStr[i] != '\0'; i++) {
-        if (sizeStr[i] >= '0' && sizeStr[i] <= '9') {
-            sizeNum = (sizeStr[i] - '0') + sizeNum * 10;
-        } else {
-            sizeUnit = sizeStr[i];
-            break;
-        }
-    }
-    if (sizeUnit == 'B') {
-        sizeNum = sizeNum;
-    } else if (sizeUnit == 'K') {
-        sizeNum *= 1024;
-    } else if (sizeUnit == 'M') {
-        sizeNum *= 1024 * 1024;
-    } else if (sizeUnit == 'G') {
-        sizeNum = 1024 * 1024 * 1024;
-    } else {
-        printf("Size %s illegal\n", sizeStr);
+void printFixedDiskByLBA(char *vhdfile, uint32_t LBA) {
+    // check if file exists
+    if (access(vhdfile, F_OK) == -1) {
+        printf("File %s not exixts\n", vhdfile);
         exit(1);
     }
-    return sizeNum;
+
+    // open file
+    FILE *fp = fopen(vhdfile,"rb");
+    if(fp == NULL){
+        printf("Cannot open file %s\n", vhdfile);
+        exit(1);
+    }
+
+    // move fp to LBA
+    fseek(fp, LBA*512, SEEK_SET);
+
+    // read
+    uint8_t buffer[512];
+    readBlock(&buffer, sizeof(buffer), fp);
+    fclose(fp);
+
+    uint32_t byteOffset = 0;
+    uint64_t lineSum_0 = 0, lineSum_1 = 0;
+    char asciiStr_0[9], asciiStr_1[9];
+    for (uint16_t i = 0; i < 512; i+=2) {
+        if (i % 16 == 0) {
+            byteOffset = i + LBA * 512;
+            printf("%08x: ", byteOffset);
+        }
+        printf("%02x%02x ", buffer[i], buffer[i+1]);
+        if (i % 16 < 8) {
+            // 0 - 7 byte inline
+            lineSum_0 += (((uint64_t)buffer[i]) << (i*8));
+            lineSum_0 += (((uint64_t)buffer[i+1]) << ((i+1)*8));
+        } else {
+            // 8 - 15 byte inline
+            lineSum_1 += (((uint64_t)buffer[i]) << ((i-8)*8));
+            lineSum_1 += (((uint64_t)buffer[i+1]) << ((i-8+1)*8));
+        }
+        if ((i+2) % 16 == 0) {
+            hex2String(lineSum_0, asciiStr_0, sizeof(asciiStr_0));
+            hex2String(lineSum_1, asciiStr_1, sizeof(asciiStr_1));
+            printf(" %s%s\n", asciiStr_0, asciiStr_1);
+            lineSum_0 = 0;
+            lineSum_1 = 0;
+        }
+    }
 }
 
+/*
+ * Description:
+ *     read bytes from input binfile, output into specified LBA of vhdfile
+ */
+void writeFixedDiskByLBA(char *binfile, char *vhdfile, uint32_t LBA) {
+    // check if file exists
+    if (access(binfile, F_OK) == -1) {
+        printf("File %s not exixts\n", binfile);
+        exit(1);
+    }
+    if (access(vhdfile, F_OK) == -1) {
+        printf("File %s not exixts\n", vhdfile);
+        exit(1);
+    }
+
+    // open input file
+    FILE *input_fp = fopen(binfile,"rb");
+    if(input_fp == NULL){
+        printf("Cannot open file %s\n", binfile);
+        exit(1);
+    }
+    // move input_fp to begin
+    fseek(input_fp, 0, SEEK_SET);
+
+    // open output file
+    FILE *output_fp = fopen(vhdfile,"rb+");
+    if(output_fp == NULL){
+        printf("Cannot open file %s\n", vhdfile);
+        exit(1);
+    }
+    // move output_fp to LBA
+    fseek(output_fp, LBA*512, SEEK_SET);
+
+    // transfer
+    int input_size = getFileSize(binfile);
+    uint8_t buffer[input_size];
+    readBlock(&buffer, sizeof(buffer), input_fp);
+    writeBlock(&buffer, sizeof(buffer), output_fp);
+
+    fclose(input_fp);
+    fclose(output_fp);
+}
 
 /*
  * Description:
@@ -470,6 +573,87 @@ void printFooter(Footer *footer) {
     }
 }
 
+/*
+ * Description:
+ *     get size (byte) of a file
+ */
+int getFileSize(char *filepath) {
+    // check if file exists
+    if (access(filepath, F_OK) == -1) {
+        printf("File %s not exixts\n", filepath);
+        exit(1);
+    }
+
+    FILE *fp;
+    int len;
+    fp = fopen(filepath, "rb");
+    if(fp == NULL) {
+        printf("Cannot open file %s\n", filepath);
+        exit(1);
+    }
+    fseek(fp, 0, SEEK_END);
+    len = ftell(fp);
+    fclose(fp);
+    return len;
+}
+
+/*
+ * Description:
+ *     write block
+ */
+void writeBlock(void *buffer, int bufferSize, FILE *fp) {
+    size_t bufferCount = fwrite(buffer, bufferSize, 1, fp);
+    if (bufferCount != 1 && ferror(fp) != 0) {
+        printf("Error occurs when writing buffer into file\n");
+        fclose(fp);
+        exit(1);
+    }
+}
+
+/*
+ * Description:
+ *     read block
+ */
+void readBlock(void *buffer, int bufferSize, FILE *fp) {
+    size_t bufferCount = fread(buffer, bufferSize, 1, fp);
+    if (bufferCount != 1 && ferror(fp) != 0) {
+        printf("Error occurs when reading buffer from file\n");
+        fclose(fp);
+        exit(1);
+    }
+}
+
+/* 
+ * Description:
+ *     parse size string into byte num, eg. "1MB" => 1048576
+ */
+uint32_t parseSize(char *sizeStr) {
+    uint32_t sizeNum = 0;
+    char sizeUnit = 'B';
+    for (int i = 0; sizeStr[i] != '\0'; i++) {
+        if (sizeStr[i] >= '0' && sizeStr[i] <= '9') {
+            sizeNum = (sizeStr[i] - '0') + sizeNum * 10;
+        } else {
+            sizeUnit = sizeStr[i];
+            break;
+        }
+    }
+    if (sizeUnit == 'B') {
+        sizeNum = sizeNum;
+    } else if (sizeUnit == 'K') {
+        sizeNum *= 1024;
+    } else if (sizeUnit == 'M') {
+        sizeNum *= 1024 * 1024;
+    } else if (sizeUnit == 'G') {
+        sizeNum = 1024 * 1024 * 1024;
+    } else {
+        printf("Size %s illegal\n", sizeStr);
+        exit(1);
+    }
+    return sizeNum;
+}
+
+
 /* 
  * Description:
  *     covert ascii hex number to string
@@ -497,184 +681,6 @@ void hex2String(uint64_t hex, char *str, int len_bytes) {
         }
     }
     str[len_bytes-1] = '\0';
-}
-
-/*
- * Description:
- *     read bytes from input binfile, output into specified LBA of vhdfile
- */
-void writeFixedDiskByLBA(char *binfile, char *vhdfile, uint32_t LBA) {
-    // check if file exists
-    if (access(binfile, F_OK) == -1) {
-        printf("File %s not exixts\n", binfile);
-        exit(1);
-    }
-    if (access(vhdfile, F_OK) == -1) {
-        printf("File %s not exixts\n", vhdfile);
-        exit(1);
-    }
-
-    // open input file
-    FILE *input_fp = fopen(binfile,"rb");
-    if(input_fp == NULL){
-        printf("Cannot open file %s\n", binfile);
-        exit(1);
-    }
-    // move input_fp to begin
-    fseek(input_fp, 0, SEEK_SET);
-
-    // open output file
-    FILE *output_fp = fopen(vhdfile,"rb+");
-    if(output_fp == NULL){
-        printf("Cannot open file %s\n", vhdfile);
-        exit(1);
-    }
-    // move output_fp to LBA
-    fseek(output_fp, LBA*512, SEEK_SET);
-
-    // transfer
-    int input_size = getFileSize(binfile);
-    uint8_t buffer[input_size];
-    readBlock(&buffer, sizeof(buffer), input_fp);
-    writeBlock(&buffer, sizeof(buffer), output_fp);
-
-    fclose(input_fp);
-    fclose(output_fp);
-}
-
-/* 
- * Description:
- *     print specified LBA in hex and ascii, similar to xxd
- */
-void printFixedDiskByLBA(char *vhdfile, uint32_t LBA) {
-    // check if file exists
-    if (access(vhdfile, F_OK) == -1) {
-        printf("File %s not exixts\n", vhdfile);
-        exit(1);
-    }
-
-    // open file
-    FILE *fp = fopen(vhdfile,"rb");
-    if(fp == NULL){
-        printf("Cannot open file %s\n", vhdfile);
-        exit(1);
-    }
-
-    // move fp to LBA
-    fseek(fp, LBA*512, SEEK_SET);
-
-    // read
-    uint8_t buffer[512];
-    readBlock(&buffer, sizeof(buffer), fp);
-    fclose(fp);
-
-    uint32_t byteOffset = 0;
-    uint64_t lineSum_0 = 0, lineSum_1 = 0;
-    char asciiStr_0[9], asciiStr_1[9];
-    for (uint16_t i = 0; i < 512; i+=2) {
-        if (i % 16 == 0) {
-            byteOffset = i + LBA * 512;
-            printf("%08x: ", byteOffset);
-        }
-        printf("%02x%02x ", buffer[i], buffer[i+1]);
-        if (i % 16 < 8) {
-            // 0 - 7 byte inline
-            lineSum_0 += (((uint64_t)buffer[i]) << (i*8));
-            lineSum_0 += (((uint64_t)buffer[i+1]) << ((i+1)*8));
-        } else {
-            // 8 - 15 byte inline
-            lineSum_1 += (((uint64_t)buffer[i]) << ((i-8)*8));
-            lineSum_1 += (((uint64_t)buffer[i+1]) << ((i-8+1)*8));
-        }
-        if ((i+2) % 16 == 0) {
-            hex2String(lineSum_0, asciiStr_0, sizeof(asciiStr_0));
-            hex2String(lineSum_1, asciiStr_1, sizeof(asciiStr_1));
-            printf(" %s%s\n", asciiStr_0, asciiStr_1);
-            lineSum_0 = 0;
-            lineSum_1 = 0;
-        }
-    }
-}
-
-/*
- * Description:
- *     create specified size of new vhdfile
- */
-void createFixedDisk(char *filepath, uint32_t len_bytes) {
-    // check if file already exists
-    if (access(filepath, F_OK) != -1) {
-        printf("File %s already exixts\n", filepath);
-        exit(1);
-    }
-
-    // check file size
-    if (len_bytes < VHD_MIN_BYTES|| len_bytes > VHD_MAX_BYTES) {
-        printf("Should specify size in 4MB - 4GB\n");
-        exit(1);
-    }
-
-    // write zero bytes to specified len
-    FILE *fp = fopen(filepath,"wb");
-    if(fp == NULL){
-        printf("Cannot open file %s\n", filepath);
-        exit(1);
-    }
-    int fd = fileno(fp);
-    int ret = ftruncate(fd, len_bytes);
-    if (ret != 0) {
-        printf("Error occurs when creating file %s\n", filepath);
-        exit(1);
-    }
-
-    // move fp to end
-    fseek(fp, 0, SEEK_END);
-
-    // add footer to end
-    // 1970.01.01 00:00:00 - now seconds
-    time_t seconds = time(NULL);
-    uint32_t time_stamp = seconds - secondsGap;
-    uint64_t original_size = len_bytes;
-    uint64_t current_size = original_size;
-    uint32_t totalSectors = original_size / 512;
-
-    Disk_geometry disk_geometry = calCHS(totalSectors);
-
-    Footer footer = { 
-        .cookie = DEFAULT_COOKIE,
-        .features = FEATURES_RESERVED,
-        .file_format_version = DEFAULT_FILE_FORMAT_VERSION,
-        .data_offset = FIXED_HARD_DISK_DATA_OFFSET,
-        .time_stamp = switchByteOrder(time_stamp, 32),
-        .creator_application = CREATOR_APPLICATION,
-        .creator_version = CREATOR_VERSION,
-        .creator_host_os = CREATOR_HOST_OS_Lnux,
-        .original_size = switchByteOrder(original_size, 64),
-        .current_size = switchByteOrder(current_size, 64),
-        .disk_geometry = disk_geometry,
-        .disk_type = DISK_TYPE_FIXED_HARD_DISK,
-        .checksum = 0, // temp value
-        .uuid = 0, // temp value
-        .saved_state = SAVED_STATE_NO
-    };
-
-    // generate uuid
-    uuid_generate((uint8_t *)&footer.uuid);
-
-    // cal checksum and fill it into footer
-    fillInChecksum(&footer);
- 
-    // append footer to file
-    writeBlock(&footer, footerSize, fp);
-    // append zero bytes to make footer meet 512 Bytes
-    int rest_len = 512 - footerSize;
-    char buffer[rest_len];
-    memset(buffer, 0x00, rest_len);
-    writeBlock(&buffer, rest_len, fp);
-    fclose(fp);
-    // print uuid
-    char uuid_str[37];
-    uuid_unparse((uint8_t *)&footer.uuid, uuid_str);
-    printf("New VHD uuid: %s\n", uuid_str);
 }
 
 
@@ -742,7 +748,6 @@ void fillInChecksum(Footer *footer) {
     }
     footer->checksum = switchByteOrder(~checksum, 32);
 }
-
 
 /* 
  * Description:
