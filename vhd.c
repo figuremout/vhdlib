@@ -107,7 +107,7 @@ uint32_t parseSize(char *sizeStr);
  * Global variables
  */
 uint32_t VHD_MAX_BYTES = 0xffffffff; // 4 GB
-uint32_t VHD_MIN_BYTES = 0x00400000; // 4 MB
+uint32_t VHD_MIN_BYTES = 0x00008800; // 34 KB
 uint16_t footerSize = sizeof(Footer);
 uint32_t secondsGap = 946699200; // 1970.01.01 00:00:00 - 2000.01.01 12:00:00 946699200s
 
@@ -251,7 +251,7 @@ void createFixedDisk(char *filepath, uint32_t len_bytes) {
 
     // check file size
     if (len_bytes < VHD_MIN_BYTES|| len_bytes > VHD_MAX_BYTES) {
-        printf("Should specify size in 4MB - 4GB\n");
+        printf("Should specify size in 34KB - 4GB\n");
         exit(1);
     }
 
@@ -723,6 +723,7 @@ Disk_geometry calCHS(uint32_t totalSectors) {
             cylinderTimesHeads = totalSectors / sectorsPerTrack;
         }
     }
+    // to make sure cylinders > 0, vhd must bigger than 34KB
     cylinders = cylinderTimesHeads / heads;
 
     Disk_geometry disk_geometry = {

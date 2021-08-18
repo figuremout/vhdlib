@@ -18,4 +18,4 @@ usage: vhd -d [vhdfile]                       show vhdfile footer info
 - Can specify LBA to check VHD content in hex (like `xxd`), but much faster than `xxd` especially when VHD is huge.
 - Can easily check VHD footer in fast speed.
 - Can easily write binary files into specified LBAs of a VHD.
-- Can easily create a specified size of VHD (4MB - 4GB).
+- Can easily create a specified size of VHD (34KB - 4GB).
