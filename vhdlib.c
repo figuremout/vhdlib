@@ -25,26 +25,27 @@ void create_fixed_disk(const char *filepath, uint32_t len_bytes)
 {
 	/* check if file already exists */
 	if (access(filepath, F_OK) != -1) {
-		printf("File %s already exixts\n", filepath);
+		fprintf(stderr, "File %s already exixts\n", filepath);
 		exit(1);
 	}
 
 	/* check file size */
 	if (len_bytes < VHD_MIN_BYTES || len_bytes > VHD_MAX_BYTES) {
-		printf("Should specify size in 34KB - 4GB\n");
+		fprintf(stderr, "Should specify size in 34KB - 4GB\n");
 		exit(1);
 	}
 
 	/* write zero bytes to specified len */
 	FILE *fp = fopen(filepath, "wb");
 	if (fp == NULL) {
-		printf("Cannot open file %s\n", filepath);
+		fprintf(stderr, "Cannot open file %s\n", filepath);
 		exit(1);
 	}
 	int fd = fileno(fp);
 	int ret = ftruncate(fd, len_bytes);
 	if (ret != 0) {
-		printf("Error occurs when creating file %s\n", filepath);
+		fprintf(stderr, "Error occurs when creating file %s\n",
+			filepath);
 		exit(1);
 	}
 
@@ -107,14 +108,14 @@ void print_fixed_disk_by_LBA(const char *vhdfile, uint32_t LBA)
 {
 	/* check if file exists */
 	if (access(vhdfile, F_OK) == -1) {
-		printf("File %s not exixts\n", vhdfile);
+		fprintf(stderr, "File %s not exixts\n", vhdfile);
 		exit(1);
 	}
 
 	/* open file */
 	FILE *fp = fopen(vhdfile, "rb");
 	if (fp == NULL) {
-		printf("Cannot open file %s\n", vhdfile);
+		fprintf(stderr, "Cannot open file %s\n", vhdfile);
 		exit(1);
 	}
 
@@ -165,18 +166,18 @@ void write_fixed_disk_by_LBA(const char *binfile, const char *vhdfile,
 {
 	/* check if file exists */
 	if (access(binfile, F_OK) == -1) {
-		printf("File %s not exixts\n", binfile);
+		fprintf(stderr, "File %s not exixts\n", binfile);
 		exit(1);
 	}
 	if (access(vhdfile, F_OK) == -1) {
-		printf("File %s not exixts\n", vhdfile);
+		fprintf(stderr, "File %s not exixts\n", vhdfile);
 		exit(1);
 	}
 
 	/* open input file */
 	FILE *input_fp = fopen(binfile, "rb");
 	if (input_fp == NULL) {
-		printf("Cannot open file %s\n", binfile);
+		fprintf(stderr, "Cannot open file %s\n", binfile);
 		exit(1);
 	}
 	/* move input_fp to begin */
@@ -185,7 +186,7 @@ void write_fixed_disk_by_LBA(const char *binfile, const char *vhdfile,
 	/* open output file */
 	FILE *output_fp = fopen(vhdfile, "rb+");
 	if (output_fp == NULL) {
-		printf("Cannot open file %s\n", vhdfile);
+		fprintf(stderr, "Cannot open file %s\n", vhdfile);
 		exit(1);
 	}
 	/* move output_fp to LBA */
@@ -209,14 +210,14 @@ struct footer *read_footer(const char *filepath)
 {
 	/* check if file exists */
 	if (access(filepath, F_OK) == -1) {
-		printf("File %s not exixts\n", filepath);
+		fprintf(stderr, "File %s not exixts\n", filepath);
 		exit(1);
 	}
 
 	int filesize = get_filesize(filepath);
 	if (filesize < (VHD_MIN_BYTES + 512) || filesize > VHD_MAX_BYTES) {
-		printf("File %s size %d Bytes, not in 4MB - 4GB\n", filepath,
-		       filesize);
+		fprintf(stderr, "File %s size %d Bytes, not in 4MB - 4GB\n",
+			filepath, filesize);
 		exit(1);
 	}
 
@@ -372,7 +373,7 @@ int get_filesize(const char *filepath)
 {
 	/* check if file exists */
 	if (access(filepath, F_OK) == -1) {
-		printf("File %s not exixts\n", filepath);
+		fprintf(stderr, "File %s not exixts\n", filepath);
 		exit(1);
 	}
 
@@ -380,7 +381,7 @@ int get_filesize(const char *filepath)
 	int len;
 	fp = fopen(filepath, "rb");
 	if (fp == NULL) {
-		printf("Cannot open file %s\n", filepath);
+		fprintf(stderr, "Cannot open file %s\n", filepath);
 		exit(1);
 	}
 	fseek(fp, 0, SEEK_END);
@@ -397,7 +398,7 @@ static void write_block(void *buffer, int bufferSize, FILE *fp)
 {
 	size_t bufferCount = fwrite(buffer, bufferSize, 1, fp);
 	if (bufferCount != 1 && ferror(fp) != 0) {
-		printf("Error occurs when writing buffer into file\n");
+		fprintf(stderr, "Error occurs when writing buffer into file\n");
 		fclose(fp);
 		exit(1);
 	}
@@ -411,7 +412,7 @@ static void read_block(void *buffer, int bufferSize, FILE *fp)
 {
 	size_t bufferCount = fread(buffer, bufferSize, 1, fp);
 	if (bufferCount != 1 && ferror(fp) != 0) {
-		printf("Error occurs when reading buffer from file\n");
+		fprintf(stderr, "Error occurs when reading buffer from file\n");
 		fclose(fp);
 		exit(1);
 	}
@@ -442,7 +443,7 @@ uint32_t parse_size(const char *sizeStr)
 	} else if (sizeUnit == 'G') {
 		sizeNum = 1024 * 1024 * 1024;
 	} else {
-		printf("Size %s illegal\n", sizeStr);
+		fprintf(stderr, "Size %s illegal\n", sizeStr);
 		exit(1);
 	}
 	return sizeNum;
