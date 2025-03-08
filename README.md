@@ -1,12 +1,3 @@
-TODO
-- tools like mkvhd, vhdinfo / readvhd
-- behave like readelf -h
-- behave like readvhd -b test.vhd | xxd
-- add comment for macro
-- make vhdlib install to dir like /usr/include/, then change `#include ""` to `#include <>`
-- delete all printf from vhdlib, them should be kept in the program not library
-- see if need static function
-
 # Virtual Hard Disk (VHD)
 > A tool to r/w VHD on Linux, according to [MicroSoft VHD Specifications](https://www.microsoft.com/en-us/download/details.aspx?id=23850)
 
